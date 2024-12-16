@@ -5,6 +5,7 @@
 #include <RemoteDebug.h>
 #include <WiFiManager.h>
 #include <ESPmDNS.h>
+#include <SPIFFS.h>
 
 #include "MultiBlinker.h"
 
@@ -15,9 +16,6 @@
 #include "HAAutoDiscovery.h"
 #include "MQTTClientWrapper.h"
 
-//define stringify function
-#define xstr(a) str(a)
-#define str(a) #a
 
 unsigned long bootStartMillis;  // To track when the device started
 RemoteDebug Debug;
@@ -62,9 +60,9 @@ void WMsaveConfigCallback(){
 }
 
 void startWiFiManager(){
-  if (ui.initialised) {
-    ui.server->stop();
-  }
+  // if (ui.initialised) {
+  //   ui.server_old->stop();
+  // }
 
   WiFiManager wm;
   WiFiManagerParameter custom_spa_name("spa_name", "Spa Name", config.SpaName.getValue().c_str(), 40);
@@ -92,7 +90,7 @@ void startWiFiManager(){
     config.MqttUsername.setValue(String(custom_mqtt_username.getValue()));
     config.MqttPassword.setValue(String(custom_mqtt_password.getValue()));
 
-    config.writeConfigFile();
+    config.writeConfig();
   }
 }
 
@@ -555,17 +553,16 @@ void setup() {
   blinker.setState(STATE_NONE); // start with all LEDs off
   blinker.start();
 
-  debugA("Starting ESP...");
-
-  debugI("Mounting FS");
-
-  if (!LittleFS.begin()) {
-    debugW("Failed to mount file system, formatting");
-    LittleFS.format();
-    LittleFS.begin();
+  if (SPIFFS.begin()) {
+    debugD("Mounted SPIFFS");
+  } else {
+    debugE("Error mounting SPIFFS");
   }
 
-  if (!config.readConfigFile()) {
+  debugA("Starting ESP...");
+
+
+  if (!config.readConfig()) {
     debugW("Failed to open config.json, starting Wi-Fi Manager");
     startWiFiManager();
   }
@@ -575,11 +572,17 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   WiFi.begin();
-  while (WiFi.status() != WL_CONNECTED) {
+  int totalTry = 10;
+  while (WiFi.status() != WL_CONNECTED && totalTry > 0) {
     delay(500);
     debugA(".");
+    totalTry--;
   }
-  debugA("Connected to Wi-Fi");
+  if (WiFi.status() != WL_CONNECTED) {
+    debugE("Failed to connected to Wi-Fi");
+  } else {
+    debugA("Connected to Wi-Fi");
+  }
 
   blinker.setState(STATE_NONE); // start with all LEDs off
 
@@ -587,7 +590,7 @@ void setup() {
   Debug.setResetCmdEnabled(true);
   Debug.showProfiler(true);
 
-  int totalTry = 5;
+  totalTry = 5;
   while (!MDNS.begin(WiFi.getHostname()) && totalTry > 0) {
     debugW(".");
     delay(1000);
@@ -618,9 +621,9 @@ void loop() {
   mqttClient.loop();
   Debug.handle();
 
-  if (ui.initialised) { 
-    ui.server->handleClient(); 
-  }
+  // if (ui.initialised) { 
+  //   ui.server_old->handleClient(); 
+  // }
 
   if (updateMqtt) {
     debugD("Changing MQTT settings...");
@@ -642,10 +645,12 @@ void loop() {
     if (delayedStart) {
       delayedStart = !(bootTime + 10000 < millis());
     } else {
-
       si.loop();
 
-      if (si.isInitialised()) {
+      if (!si.isInitialised()) {
+        // set status lights to indicate we are waiting for spa connection before we proceed
+        blinker.setState(STATE_WAITING_FOR_SPA);
+      } else {
         if ( spaSerialNumber=="" ) {
           debugI("Initialising...");
       
@@ -690,7 +695,6 @@ void loop() {
             mqttPublishStatus();
 
             si.statusResponse.setCallback(mqttPublishStatusString);
-
           }
           
           // all systems are go! Start the knight rider animation loop
